@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Character Walking Animation Test</title>
+    <style>
+      :root {
+        --field-w: 1560px;
+        --field-h: 780px;
+        --field-bg: #aee0ff;
+        --ground-h: 240px;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: #111;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        user-select: none;
+      }
+
+      #stage {
+        position: relative;
+      }
+
+      #playfield {
+        width: var(--field-w);
+        height: var(--field-h);
+        background: var(--field-bg);
+        position: relative;
+        overflow: hidden;
+      }
+
+      #ground {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: var(--ground-h);
+        background: #fff1de;
+      }
+
+      #plant {
+        position: absolute;
+        left: 50%;
+        bottom: var(--ground-h);
+        transform: translateX(-50%) scale(2);
+        transform-origin: bottom center;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        -webkit-user-drag: none;
+        user-select: none;
+        pointer-events: none;
+      }
+
+      #character {
+        position: absolute;
+        left: 0;
+        top: 0;
+        transform: translateX(-50%);
+        pointer-events: none;
+      }
+
+      #sprite {
+        display: block;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        transform-origin: center center;
+        -webkit-user-drag: none;
+        user-select: none;
+      }
+
+      #instructions {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 3;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        -webkit-user-drag: none;
+        user-select: none;
+        pointer-events: none;
+      }
+
+      #needwater-indicator {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        display: none;
+        z-index: 3;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        -webkit-user-drag: none;
+        user-select: none;
+        pointer-events: none;
+      }
+
+      #wateringcan {
+        position: absolute;
+        top: 0;
+        left: 0;
+        display: none;
+        z-index: 2;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        transform-origin: center center;
+        -webkit-user-drag: none;
+        user-select: none;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage" aria-hidden="true">
+      <div id="playfield" aria-label="playfield">
+        <div id="ground" aria-hidden="true"></div>
+        <img id="instructions" alt="instructions" src="./assets v2/ui/instructions.png" />
+        <img id="plant" alt="plant" />
+        <img id="needwater-indicator" alt="needs water" />
+        <div id="character" aria-hidden="true">
+          <img id="sprite" alt="character sprite" />
+          <img id="wateringcan" alt="watering can" />
+        </div>
+      </div>
+    </div>
+
+    <script>
+      (() => {
+        const FIELD_W = 1560;
+        const FIELD_H = 780;
+        const GROUND_H = 240;
+        const SPEED_PX_PER_SEC = 480;
+        const GRAVITY_PX_PER_SEC2 = 2400;
+        const JUMP_VELOCITY_PX_PER_SEC = 720;
+        const BEND_DURATION_MS = 500;
+        const WALK_FPS = 8;
+        const WALK_FRAME_MS = 1000 / WALK_FPS;
+
+        const ASSET_BASE = "./assets v2/character/";
+        const ASSETS = {
+          idle: ASSET_BASE + "idle.png",
+          jump: ASSET_BASE + "jump.png",
+          bend: ASSET_BASE + "bend.png",
+          walk: [
+            ASSET_BASE + "walk_0.png",
+            ASSET_BASE + "walk_1.png",
+            ASSET_BASE + "walk_2.png",
+            ASSET_BASE + "walk_3.png",
+            ASSET_BASE + "walk_2.png",
+            ASSET_BASE + "walk_1.png",
+          ],
+        };
+
+        const ACCESSORY_BASE = "./assets v2/accessories/";
+        const ACCESSORIES = {
+          wateringCan: ACCESSORY_BASE + "watering can.png",
+        };
+
+        const UI_BASE = "./assets v2/ui/";
+        const UI = {
+          needWater: UI_BASE + "needwater.png",
+        };
+
+        const PLANT_ASSET_BASE = "./assets v2/plant/";
+        const PLANT_STAGES = [
+          PLANT_ASSET_BASE + "stage0.png",
+          PLANT_ASSET_BASE + "stage1.png",
+          PLANT_ASSET_BASE + "stage2.png",
+        ];
+        const PLANT_STAGES_DROOP = [
+          null,
+          PLANT_ASSET_BASE + "stage1-droop.png",
+          PLANT_ASSET_BASE + "stage2-droop.png",
+        ];
+        const WATER_NEED_INTERVAL_MS = 8000;
+
+        /** @type {HTMLDivElement} */
+        const stage = document.getElementById("stage");
+        /** @type {HTMLDivElement} */
+        const playfield = document.getElementById("playfield");
+        /** @type {HTMLImageElement} */
+        const plantEl = document.getElementById("plant");
+        /** @type {HTMLDivElement} */
+        const characterEl = document.getElementById("character");
+        /** @type {HTMLImageElement} */
+        const spriteEl = document.getElementById("sprite");
+        /** @type {HTMLImageElement} */
+        const wateringCanEl = document.getElementById("wateringcan");
+        /** @type {HTMLImageElement} */
+        const needWaterEl = document.getElementById("needwater-indicator");
+
+        const keys = {
+          left: false,
+          right: false,
+          jumpHeld: false,
+          bendHeld: false,
+        };
+
+        const state = {
+          cx: 0,
+          y: 0,
+          vy: 0,
+          spriteW: 0,
+          spriteH: 0,
+          facing: "left", // 'left' | 'right'
+          mode: "idle", // 'idle' | 'walk'
+          walkIdx: 0,
+          walkMsAcc: 0,
+          plantStage: 0,
+          plantMsAcc: 0,
+          needsWater: 0,
+          waterMsAcc: 0,
+          bendMsRemaining: 0,
+          wateringCanW: 0,
+          lastT: 0,
+        };
+
+        function clamp(v, lo, hi) {
+          return Math.max(lo, Math.min(hi, v));
+        }
+
+        function desiredDir() {
+          if (keys.left && keys.right) return 0;
+          if (keys.left) return -1;
+          if (keys.right) return 1;
+          return 0;
+        }
+
+        function setPlantSrc(src) {
+          const next = new URL(src, window.location.href).href;
+          if (plantEl.src === next) return;
+          plantEl.src = next;
+        }
+
+        function currentPlantSprite() {
+          const stageIdx = clamp(state.plantStage, 0, PLANT_STAGES.length - 1);
+          if (state.needsWater === 1) {
+            const droop = PLANT_STAGES_DROOP[stageIdx];
+            if (droop) return droop;
+          }
+          return PLANT_STAGES[stageIdx];
+        }
+
+        function updatePlantVisual() {
+          setPlantSrc(currentPlantSprite());
+          if (state.needsWater === 1) {
+            needWaterEl.style.display = "block";
+            const plantScale = 2;
+            const plantH = plantEl.naturalHeight || 0;
+            needWaterEl.style.bottom = `${GROUND_H + plantH * plantScale + 8}px`;
+          } else {
+            needWaterEl.style.display = "none";
+          }
+        }
+
+        function isNearPlant() {
+          const plantCenterX = FIELD_W / 2;
+          const plantW = plantEl.naturalWidth || 0;
+          const plantScale = 2;
+          const margin = 32;
+          const thresh = (plantW * plantScale) / 2 + state.spriteW / 2 + margin;
+          return Math.abs(state.cx - plantCenterX) <= thresh;
+        }
+
+        function waterPlantAndRestartTimer() {
+          state.needsWater = 0;
+          state.waterMsAcc = 0;
+          updatePlantVisual();
+        }
+
+        function setSpriteSrc(src) {
+          const next = new URL(src, window.location.href).href;
+          if (spriteEl.src === next) return;
+          spriteEl.src = next;
+        }
+
+        function setFacing(dir) {
+          if (dir > 0) state.facing = "right";
+          if (dir < 0) state.facing = "left";
+          spriteEl.style.transform = state.facing === "right" ? "scaleX(-1)" : "scaleX(1)";
+          layoutWateringCan();
+        }
+
+        function setMode(nextMode) {
+          const changed = state.mode !== nextMode;
+          state.mode = nextMode;
+          if (nextMode === "idle") {
+            if (changed) {
+              state.walkIdx = 0;
+              state.walkMsAcc = 0;
+            }
+            setSpriteSrc(ASSETS.idle);
+          } else {
+            if (changed) {
+              state.walkIdx = 0;
+              state.walkMsAcc = 0;
+            }
+            setSpriteSrc(ASSETS.walk[state.walkIdx]);
+          }
+        }
+
+        function layoutSprite() {
+          characterEl.style.left = `${Math.round(state.cx)}px`;
+          characterEl.style.top = `${Math.round(state.y)}px`;
+          layoutWateringCan();
+        }
+
+        function layoutWateringCan() {
+          const canW = state.wateringCanW || wateringCanEl.naturalWidth || 0;
+          const spriteW = state.spriteW || spriteEl.naturalWidth || 0;
+          if (!canW || !spriteW) return;
+          const towardCharacterPx = 48;
+          wateringCanEl.style.left =
+            state.facing === "right"
+              ? `${spriteW - towardCharacterPx}px`
+              : `${-canW + towardCharacterPx}px`;
+          wateringCanEl.style.transform = state.facing === "right" ? "scaleX(-1)" : "scaleX(1)";
+        }
+
+        function floorY() {
+          return FIELD_H - GROUND_H - state.spriteH;
+        }
+
+        function clampCx() {
+          const min = state.spriteW / 2;
+          const max = FIELD_W - state.spriteW / 2;
+          state.cx = clamp(state.cx, min, max);
+        }
+
+        function isOnGround() {
+          return state.y >= floorY() - 0.5 && state.vy >= 0;
+        }
+
+        function jump() {
+          if (!isOnGround()) return;
+          state.vy = -JUMP_VELOCITY_PX_PER_SEC;
+        }
+
+        function updateSpriteDimsFromElement({ preserveCenterX } = { preserveCenterX: true }) {
+          const w = spriteEl.naturalWidth;
+          const h = spriteEl.naturalHeight;
+          if (!w || !h) return false;
+          const keepCx = preserveCenterX ? state.cx : null;
+          state.spriteW = w;
+          state.spriteH = h;
+          state.y = floorY();
+          if (keepCx != null) state.cx = keepCx;
+          clampCx();
+          layoutSprite();
+          return true;
+        }
+
+        function updateWateringCanDimsFromElement() {
+          const w = wateringCanEl.naturalWidth;
+          if (!w) return false;
+          state.wateringCanW = w;
+          layoutWateringCan();
+          return true;
+        }
+
+        async function preloadImage(src) {
+          const img = new Image();
+          img.src = src;
+          await img.decode();
+          return img;
+        }
+
+        function applyResponsiveScaleCapToViewport() {
+          const scale = Math.min(1, window.innerWidth / FIELD_W, window.innerHeight / FIELD_H);
+          stage.style.width = `${Math.floor(FIELD_W * scale)}px`;
+          stage.style.height = `${Math.floor(FIELD_H * scale)}px`;
+          playfield.style.transformOrigin = "top left";
+          playfield.style.transform = `scale(${scale})`;
+        }
+
+        function onKeyChange(e, isDown) {
+          const code = e.code;
+          const key = e.key;
+
+          const left =
+            code === "ArrowLeft" ||
+            code === "KeyA" ||
+            (typeof key === "string" && key.toLowerCase() === "a");
+          const right =
+            code === "ArrowRight" ||
+            code === "KeyD" ||
+            (typeof key === "string" && key.toLowerCase() === "d");
+
+          const jumpKey =
+            code === "Space" ||
+            code === "ArrowUp" ||
+            code === "KeyW" ||
+            (typeof key === "string" && key.toLowerCase() === "w");
+
+          const bendKey =
+            code === "KeyE" || (typeof key === "string" && key.toLowerCase() === "e");
+
+          if (left || right || jumpKey || bendKey) e.preventDefault();
+          if (left) keys.left = isDown;
+          if (right) keys.right = isDown;
+
+          if (jumpKey) {
+            if (isDown && !keys.jumpHeld) jump();
+            keys.jumpHeld = isDown;
+          }
+
+          if (bendKey) {
+            if (isDown && !keys.bendHeld) {
+              if (isOnGround() && state.bendMsRemaining <= 0) {
+                if (isNearPlant()) {
+                  // Water interaction: always restart countdown, and clear needsWater if set.
+                  waterPlantAndRestartTimer();
+                }
+                state.bendMsRemaining = BEND_DURATION_MS;
+                setSpriteSrc(ASSETS.bend);
+                wateringCanEl.style.display = "block";
+                layoutWateringCan();
+              }
+            }
+            keys.bendHeld = isDown;
+          }
+        }
+
+        function tick(t) {
+          if (!state.lastT) state.lastT = t;
+          const dtSec = Math.min(0.05, (t - state.lastT) / 1000);
+          state.lastT = t;
+          const dtMs = dtSec * 1000;
+
+          // Plant growth: stage0 -> stage1 -> stage2 every 10 seconds
+          const PLANT_STAGE_DURATIONS_MS = [5000, 15000];
+          if (state.plantStage < PLANT_STAGES.length - 1) {
+            state.plantMsAcc += dtMs;
+            const stageDuration = PLANT_STAGE_DURATIONS_MS[state.plantStage] ?? 10000;
+            if (state.plantMsAcc >= stageDuration) {
+              state.plantMsAcc -= stageDuration;
+              state.plantStage += 1;
+              updatePlantVisual();
+            }
+          }
+
+          // Water need timer: after 15s, needsWater becomes 1 until watered.
+          if (state.needsWater === 0) {
+            state.waterMsAcc += dtMs;
+            if (state.waterMsAcc >= WATER_NEED_INTERVAL_MS) {
+              state.needsWater = 1;
+              state.waterMsAcc = WATER_NEED_INTERVAL_MS;
+              updatePlantVisual();
+            }
+          }
+
+          if (state.bendMsRemaining > 0) {
+            state.bendMsRemaining = Math.max(0, state.bendMsRemaining - dtMs);
+            if (state.bendMsRemaining <= 0) {
+              wateringCanEl.style.display = "none";
+            }
+          }
+
+          const dir = desiredDir();
+          if (dir !== 0) setFacing(dir);
+
+          // Horizontal movement always applies (even mid-air), except while bending
+          if (state.bendMsRemaining <= 0) {
+            state.cx += dir * SPEED_PX_PER_SEC * dtSec;
+            clampCx();
+          }
+
+          // Vertical physics (jump + gravity)
+          state.vy += GRAVITY_PX_PER_SEC2 * dtSec;
+          state.y += state.vy * dtSec;
+
+          const yFloor = floorY();
+          if (state.y >= yFloor) {
+            state.y = yFloor;
+            if (state.vy > 0) state.vy = 0;
+          }
+          state.y = clamp(state.y, 0, yFloor);
+
+          // Animation: use jump sprite while airborne
+          if (state.bendMsRemaining > 0) {
+            setSpriteSrc(ASSETS.bend);
+            wateringCanEl.style.display = "block";
+          } else {
+            wateringCanEl.style.display = "none";
+            const airborne = !isOnGround();
+            if (airborne) {
+              setSpriteSrc(ASSETS.jump);
+            } else if (dir === 0) {
+              setMode("idle");
+            } else {
+              setMode("walk");
+              state.walkMsAcc += dtMs;
+              while (state.walkMsAcc >= WALK_FRAME_MS) {
+                state.walkMsAcc -= WALK_FRAME_MS;
+                state.walkIdx = (state.walkIdx + 1) % ASSETS.walk.length;
+                setSpriteSrc(ASSETS.walk[state.walkIdx]);
+              }
+            }
+          }
+
+          layoutSprite();
+          requestAnimationFrame(tick);
+        }
+
+        async function init() {
+          playfield.style.width = `${FIELD_W}px`;
+          playfield.style.height = `${FIELD_H}px`;
+          applyResponsiveScaleCapToViewport();
+          window.addEventListener("resize", applyResponsiveScaleCapToViewport);
+
+          await Promise.all([
+            preloadImage(ASSETS.idle),
+            preloadImage(ASSETS.jump),
+            preloadImage(ASSETS.bend),
+            preloadImage(ACCESSORIES.wateringCan),
+            preloadImage(UI.needWater),
+            ...ASSETS.walk.map(preloadImage),
+            ...PLANT_STAGES.map(preloadImage),
+            ...PLANT_STAGES_DROOP.filter(Boolean).map(preloadImage),
+          ]);
+
+          updatePlantVisual();
+          await plantEl.decode();
+
+          wateringCanEl.src = new URL(ACCESSORIES.wateringCan, window.location.href).href;
+          await wateringCanEl.decode();
+          updateWateringCanDimsFromElement();
+          wateringCanEl.style.display = "none";
+          wateringCanEl.addEventListener("load", () => {
+            updateWateringCanDimsFromElement();
+          });
+
+          needWaterEl.src = new URL(UI.needWater, window.location.href).href;
+          await needWaterEl.decode();
+          needWaterEl.style.display = "none";
+
+          spriteEl.src = ASSETS.idle;
+          await spriteEl.decode();
+
+          updateSpriteDimsFromElement({ preserveCenterX: false });
+          const plantW = plantEl.naturalWidth || 0;
+          const plantCenterX = (FIELD_W - plantW) / 2 + plantW / 2;
+          const gap = 104;
+          state.cx = Math.round(plantCenterX - gap - state.spriteW / 2);
+          clampCx();
+          state.y = floorY();
+          setFacing(1);
+          setMode("idle");
+          layoutSprite();
+
+          window.addEventListener("keydown", (e) => onKeyChange(e, true), { passive: false });
+          window.addEventListener("keyup", (e) => onKeyChange(e, false), { passive: false });
+          window.addEventListener("blur", () => {
+            keys.left = false;
+            keys.right = false;
+            keys.jumpHeld = false;
+            keys.bendHeld = false;
+          });
+
+          spriteEl.addEventListener("load", () => {
+            updateSpriteDimsFromElement({ preserveCenterX: true });
+          });
+
+          requestAnimationFrame(tick);
+        }
+
+        init().catch((err) => {
+          console.error(err);
+          const pre = document.createElement("pre");
+          pre.style.color = "white";
+          pre.style.maxWidth = "min(960px, 92vw)";
+          pre.style.whiteSpace = "pre-wrap";
+          pre.textContent = String(err && err.stack ? err.stack : err);
+          document.body.appendChild(pre);
+        });
+      })();
+    </script>
+  </body>
+</html>
